@@ -44,6 +44,7 @@ if (config.deployMode === 'engr') {
     console.log("nodetime started");
 }
 
+
 var requirejs = require("requirejs");
 
 requirejs.config({
@@ -61,7 +62,7 @@ if (config.deployMode === 'engr') {
 var winston = require('winston');
 var logger = new (winston.Logger)({
     transports: [
-        new (winston.transports.Console)({level: 'warn', timestamp: true, colorize: true}),
+        new (winston.transports.Console)({level: 'info', timestamp: true, colorize: true}),
         new (winston.transports.File)({filename: logFilename, level: 'info'})
     ]
 });
@@ -77,7 +78,6 @@ requirejs.onError = function(err) {
     logger.error("requirejs load error", data);
 };
 
-var hmacSha256 = require("crypto-js/hmac-sha256");
 var gamma = require("gamma");
 var numeric = require("numeric");
 var PrairieStats = requirejs("PrairieStats");
@@ -90,32 +90,6 @@ var SAMPLE_INTERVAL = 60 * 1000; // ms
 var nSample = 0;
 
 var STATS_INTERVAL = 10 * 60 * 1000; // ms
-
-var skipUIDs = {};
-if (config.deployMode === 'engr') {
-    skipUIDs["user1@illinois.edu"] = true;
-    skipUIDs["mwest@illinois.edu"] = true;
-    skipUIDs["zilles@illinois.edu"] = true;
-    skipUIDs["dullerud@illinois.edu"] = true;
-    skipUIDs["tomkin@illinois.edu"] = true;
-    skipUIDs["ertekin@illinois.edu"] = true;
-    skipUIDs["jkrehbi2@illinois.edu"] = true;
-    skipUIDs["aandrsn3@illinois.edu"] = true;
-    skipUIDs["farooq1@illinois.edu"] = true;
-    skipUIDs["jsandrs2@illinois.edu"] = true;
-    skipUIDs["knguyen9@illinois.edu"] = true;
-    skipUIDs["linguo2@illinois.edu"] = true;
-    skipUIDs["saggrwl3@illinois.edu"] = true;
-    skipUIDs["hwang158@illinois.edu"] = true;
-    skipUIDs["mfsilva@illinois.edu"] = true;
-    skipUIDs["gladish2@illinois.edu"] = true;
-    skipUIDs["ffxiao2@illinois.edu"] = true;
-}
-
-var superusers = {
-    "user1@illinois.edu": true,
-    "mwest@illinois.edu": true
-};
 
 app.use(express.json());
 
@@ -136,7 +110,9 @@ var newID = function(type, callback) {
 
 var newIDNoError = function(req, res, type, callback) {
     newID(type, function(err, id) {
-        if (err) return sendError(res, 500, "Error getting new ID of type " + type, err);
+        if (err)
+            throw err;
+            //return sendError(res, 500, "Error getting new ID of type " + type, err);
         callback(id);
     });
 };
@@ -388,14 +364,11 @@ var monitor = function() {
     nSample = 0;
 };
 
-var sendError = function(res, code, msg, err) {
-    logger.error("returning error", {code: code, msg: msg, err: err});
-    res.send(code, msg);
-};
-
 var checkObjAuth = function(req, obj) {
     var authorized = false;
-    if (isSuperuser(req))
+    //if (isSuperuser(req))
+    console.log("Checking superuser: " + req.app.enabled("superuser"));
+    if (req.app.enabled("superuser"))
         authorized = true;
     if (obj.uid === req.authUID) {
         if (obj.availDate === undefined) {
@@ -418,7 +391,8 @@ var ensureObjAuth = function(req, res, obj, callback) {
     if (checkObjAuth(req, obj)) {
         callback(obj);
     } else {
-        return sendError(res, 403, "Insufficient permissions: " + req.path);
+        throw new Error("Insufficient permissions: " + req.path);
+        //return sendError(res, 403, "Insufficient permissions: " + req.path);
     }
 };
 
@@ -438,65 +412,33 @@ var stripPrivateFields = function(obj) {
     return newObj;
 };
 
-app.use(function(req, res, next) {
-    logRequest();
 
-    // hack due to RequireJS not providing header support
-    if (/^\/questions/.test(req.path)) {
-        req.authUID = "nouser";
-        next();
-        return;
-    }
-    // hack due to RequireJS not providing header support
-    if (/^\/tests/.test(req.path)) {
-        req.authUID = "nouser";
-        next();
-        return;
-    }
 
-    if (req.method === 'OPTIONS') {
-        // don't authenticate for OPTIONS requests, as these are just for CORS
-        next();
-        return;
-    }
-    if (config.deployMode !== 'engr') {
-        // by-pass authentication for development
-        req.authUID = "user1@illinois.edu";
-    } else {
-        if (req.headers['x-auth-uid'] == null) {
-            return sendError(res, 403, "Missing X-Auth-UID header");
-        }
-        if (req.headers['x-auth-name'] == null) {
-            return sendError(res, 403, "Missing X-Auth-Name header");
-        }
-        if (req.headers['x-auth-date'] == null) {
-            return sendError(res, 403, "Missing X-Auth-Date header");
-        }
-        if (req.headers['x-auth-signature'] == null) {
-            return sendError(res, 403, "Missing X-Auth-Signature header");
-        }
-        var authUID = req.headers['x-auth-uid'];
-        var authName = req.headers['x-auth-name'];
-        var authDate = req.headers['x-auth-date'];
-        var authSignature = req.headers['x-auth-signature'];
-        var checkData = authUID + "/" + authName + "/" + authDate;
-        var checkSignature = hmacSha256(checkData, config.secretKey);
-        checkSignature = checkSignature.toString();
-        if (authSignature !== checkSignature) {
-            return sendError(res, 403, "Invalid X-Auth-Signature for " + authUID);
-        }
-        req.authUID = authUID;
-    }
+app.use(function (req, res, next) { logRequest(); next(); });
+
+var pl_auth = require("./PL/auth");
+app.use(pl_auth.authenticate);
+app.use(pl_auth.setPermissions);
+
+var pl_error = require("./PL/error");
+app.use(pl_error.log);
+app.use(pl_error.handle);
+
+
+
+app.use(function (req, res, next) {
 
     // add authUID to DB if not already present
     uCollect.findOne({uid: req.authUID}, function(err, uObj) {
         if (err) {
-            return sendError(res, 500, "error checking for user: " + req.authUID, err);
+            throw err;
+            //return sendError(res, 500, "error checking for user: " + req.authUID, err);
         }
         if (!uObj) {
             uCollect.insert({uid: req.authUID}, {w: 1}, function(err) {
                 if (err) {
-                    return sendError(res, 500, "error adding user: " + req.authUID, err);
+                    throw err;
+                    //return sendError(res, 500, "error adding user: " + req.authUID, err);
                 }
                 next();
             });
@@ -505,12 +447,6 @@ app.use(function(req, res, next) {
         }
     });
 });
-
-var isSuperuser = function(req) {
-    if (superusers[req.authUID] === true)
-        return true;
-    return false;
-};
 
 app.use(function(req, res, next) {
     if (req.method !== 'OPTIONS') {
@@ -527,7 +463,6 @@ app.use(function(req, res, next) {
 });
 
 app.all('/*', function(req, res, next) {
-
     // enable CORS on all requests, see http://enable-cors.org/server_expressjs.html
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Methods", "POST, PUT, PATCH, GET, OPTIONS");
@@ -567,7 +502,8 @@ app.get("/questions", function(req, res) {
 app.get("/questions/:qid", function(req, res) {
     var info = questionDB[req.params.qid];
     if (info === undefined)
-        return sendError(res, 404, "No such question: " + req.params.qid);
+        throw new Error("No such question: " + req.params.qid);
+        //return sendError(res, 404, "No such question: " + req.params.qid);
     res.json(stripPrivateFields({qid: info.qid, title: info.title, number: info.number}));
 });
 
@@ -602,7 +538,8 @@ var questionFilePath = function(qid, filename, callback, nTemplates) {
 var sendQuestionFile = function(req, res, filename) {
     questionFilePath(req.params.qid, filename, function(err, filePath) {
         if (err)
-            return sendError(res, 404, "No such file '" + filename + "' for qid: " + req.params.qid, err);
+            throw err;
+            //return sendError(res, 404, "No such file '" + filename + "' for qid: " + req.params.qid, err);
         res.sendfile(filePath, {root: config.questionsDir});
     });
 };
@@ -613,19 +550,23 @@ app.get("/questions/:qid/:filename", function(req, res) {
 
 app.get("/users", function(req, res) {
     if (!uCollect) {
-        return sendError(res, 500, "Do not have access to the users database collection");
+        throw new Error("Do not have access to the users database collection");
+        //return sendError(res, 500, "Do not have access to the users database collection");
     }
     uCollect.find({}, {"uid": 1, "name": 1}, function(err, cursor) {
         if (err) {
-            return sendError(res, 500, "Error accessing users database", err);
+            throw err;
+            //return sendError(res, 500, "Error accessing users database", err);
         }
         cursor.toArray(function(err, objs) {
             if (err) {
-                return sendError(res, 500, "Error serializing users", err);
+                throw err;
+                //return sendError(res, 500, "Error serializing users", err);
             }
             async.map(objs, function(u, callback) {
                 var perms = [];
-                if (superusers[u.uid] === true)
+                //if (superusers[u.uid] === true)
+                if (req.app.enabled("superuser"))
                     perms.push("superuser");
                 callback(null, {
                     name: u.name,
@@ -634,7 +575,8 @@ app.get("/users", function(req, res) {
                 });
             }, function(err, objs) {
                 if (err) {
-                    return sendError(res, 500, "Error cleaning users", err);
+                    throw err;
+                    //return sendError(res, 500, "Error cleaning users", err);
                 }
                 filterObjsByAuth(req, objs, function(objs) {
                     res.json(stripPrivateFields(objs));
@@ -646,17 +588,20 @@ app.get("/users", function(req, res) {
 
 app.get("/users/:uid", function(req, res) {
     if (!uCollect) {
-        return sendError(res, 500, "Do not have access to the users database collection");
+        throw new Error("Do not have access to the users database collection");
+        //return sendError(res, 500, "Do not have access to the users database collection");
     }
     uCollect.findOne({uid: req.params.uid}, function(err, uObj) {
         if (err) {
-            return sendError(res, 500, "Error accessing users database for uid " + req.params.uid, err);
+            throw err;
+            //return sendError(res, 500, "Error accessing users database for uid " + req.params.uid, err);
         }
         if (!uObj) {
-            return sendError(res, 404, "No user with uid " + req.params.uid);
+            throw new Error("No user with uid " + req.params.uid);
+            //return sendError(res, 404, "No user with uid " + req.params.uid);
         }
         var perms = [];
-        if (superusers[uObj.uid] === true)
+        if (req.app.enabled("superuser"))
             perms.push("superuser");
         var obj = {
             name: uObj.name,
@@ -671,7 +616,8 @@ app.get("/users/:uid", function(req, res) {
 
 app.get("/qInstances", function(req, res) {
     if (!qiCollect) {
-        return sendError(res, 500, "Do not have access to the qInstances database collection");
+        throw new Error("Do not have access to the qInstances database collection");
+        //return sendError(res, 500, "Do not have access to the qInstances database collection");
     }
     var query = {};
     if ("uid" in req.query) {
@@ -685,11 +631,13 @@ app.get("/qInstances", function(req, res) {
     }
     qiCollect.find(query, function(err, cursor) {
         if (err) {
-            return sendError(res, 500, "Error accessing qInstances database", err);
+            throw err;
+            //return sendError(res, 500, "Error accessing qInstances database", err);
         }
         cursor.toArray(function(err, objs) {
             if (err) {
-                return sendError(res, 500, "Error serializing qInstances", err);
+                throw err;
+                //return sendError(res, 500, "Error serializing qInstances", err);
             }
             filterObjsByAuth(req, objs, function(objs) {
                 res.json(stripPrivateFields(objs));
@@ -700,14 +648,17 @@ app.get("/qInstances", function(req, res) {
 
 app.get("/qInstances/:qiid", function(req, res) {
     if (!qiCollect) {
-        return sendError(res, 500, "Do not have access to the qInstances database collection");
+        throw new Error("Do not have access to the qInstances database collection");
+        //return sendError(res, 500, "Do not have access to the qInstances database collection");
     }
     qiCollect.findOne({qiid: req.params.qiid}, function(err, obj) {
         if (err) {
-            return sendError(res, 500, "Error accessing qInstances database for qiid " + req.params.qiid, err);
+            throw err;
+            //return sendError(res, 500, "Error accessing qInstances database for qiid " + req.params.qiid, err);
         }
         if (!obj) {
-            return sendError(res, 404, "No qInstance with qiid " + req.params.qiid);
+            throw new Error("No qInstance with qiid " + req.params.qiid);
+            //return sendError(res, 404, "No qInstance with qiid " + req.params.qiid);
         }
         ensureObjAuth(req, res, obj, function(obj) {
             res.json(stripPrivateFields(obj));
@@ -717,18 +668,22 @@ app.get("/qInstances/:qiid", function(req, res) {
 
 var makeQInstance = function(req, res, qInstance, callback) {
     if (qInstance.uid === undefined) {
-        return sendError(res, 400, "No user ID provided");
+        throw new Error("No user ID provided");
+        //return sendError(res, 400, "No user ID provided");
     }
     if (qInstance.qid === undefined) {
-        return sendError(res, 400, "No question ID provided");
+        throw new Error("No question ID provided");
+        //return sendError(res, 400, "No question ID provided");
     }
     if (qInstance.tiid === undefined) {
-        return sendError(res, 400, "No tInstance ID provided");
+        throw new Error("No tInstance ID provided");
+        //return sendError(res, 400, "No tInstance ID provided");
     }
     qInstance.date = new Date();
     var info = questionDB[qInstance.qid];
     if (info === undefined) {
-        return sendError(res, 400, "Invalid QID: " + qInstance.qid);
+        throw new Error("Invalid QID: " + qInstance.qid);
+        //return sendError(res, 400, "Invalid QID: " + qInstance.qid);
     }
     if (qInstance.vid === undefined) {
         qInstance.vid = Math.floor(Math.random() * Math.pow(2, 32)).toString(36);
@@ -744,11 +699,13 @@ var makeQInstance = function(req, res, qInstance, callback) {
                     qInstance.trueAnswer = questionData.trueAnswer || {};
                     qInstance.options = questionData.options || {};
                 } catch (e) {
-                    return sendError(res, 500, "Error in " + qInstance.qid + " getData(): " + e.toString(), {stack: e.stack});
+                    throw e;
+                    //return sendError(res, 500, "Error in " + qInstance.qid + " getData(): " + e.toString(), {stack: e.stack});
                 }
                 qiCollect.insert(qInstance, {w: 1}, function(err) {
                     if (err) {
-                        return sendError(res, 500, "Error writing qInstance to database", err);
+                        throw err;
+                        //return sendError(res, 500, "Error writing qInstance to database", err);
                     }
                     return callback(qInstance);
                 });
@@ -774,7 +731,8 @@ app.post("/qInstances", function(req, res) {
 
 app.get("/submissions", function(req, res) {
     if (!sCollect) {
-        return sendError(res, 500, "Do not have access to the submissions database collection");
+        throw new Error("Do not have access to the submissions database collection");
+        //return sendError(res, 500, "Do not have access to the submissions database collection");
     }
     var query = {};
     if ("uid" in req.query) {
@@ -785,11 +743,13 @@ app.get("/submissions", function(req, res) {
     }
     sCollect.find(query, function(err, cursor) {
         if (err) {
-            return sendError(res, 500, "Error accessing submissions database", err);
+            throw err;
+            //return sendError(res, 500, "Error accessing submissions database", err);
         }
         cursor.toArray(function(err, objs) {
             if (err) {
-                return sendError(res, 500, "Error serializing submissions", err);
+                throw err;
+                //return sendError(res, 500, "Error serializing submissions", err);
             }
             filterObjsByAuth(req, objs, function(objs) {
                 res.json(stripPrivateFields(objs));
@@ -800,14 +760,17 @@ app.get("/submissions", function(req, res) {
 
 app.get("/submissions/:sid", function(req, res) {
     if (!sCollect) {
-        return sendError(res, 500, "Do not have access to the submissions database collection");
+        throw new Error("Do not have access to the submissions database collection");
+        //return sendError(res, 500, "Do not have access to the submissions database collection");
     }
     sCollect.findOne({sid: req.params.sid}, function(err, obj) {
         if (err) {
-            return sendError(res, 500, "Error accessing submissions database for sid " + req.params.sid, err);
+            throw err;
+            //return sendError(res, 500, "Error accessing submissions database for sid " + req.params.sid, err);
         }
         if (!obj) {
-            return sendError(res, 404, "No submission with sid " + req.params.sid);
+            throw new Error("No submission with sid " + req.params.sid);
+            //return sendError(res, 404, "No submission with sid " + req.params.sid);
         }
         ensureObjAuth(req, res, obj, function(obj) {
             res.json(stripPrivateFields(obj));
@@ -822,9 +785,11 @@ var deepClone = function(obj) {
 var readTInstance = function(res, tiid, callback) {
     tiCollect.findOne({tiid: tiid}, function(err, obj) {
         if (err)
-            return sendError(res, 500, "Error accessing tInstance database", {tiid: tiid, err: err});
+            throw err;
+            //return sendError(res, 500, "Error accessing tInstance database", {tiid: tiid, err: err});
         if (!obj)
-            return sendError(res, 404, "No tInstance with tiid " + tiid, {tiid: tiid, err: err});
+            throw new Error("No tInstance with tiid " + tiid);
+            //return sendError(res, 404, "No tInstance with tiid " + tiid, {tiid: tiid, err: err});
         return callback(obj);
     });
 };
@@ -832,9 +797,11 @@ var readTInstance = function(res, tiid, callback) {
 var readQInstance = function(res, qiid, callback) {
     qiCollect.findOne({qiid: qiid}, function(err, obj) {
         if (err)
-            return sendError(res, 500, "Error accessing qInstance database", {qiid: qiid, err: err});
+            throw err;
+            //return sendError(res, 500, "Error accessing qInstance database", {qiid: qiid, err: err});
         if (!obj)
-            return sendError(res, 404, "No qInstance with qiid " + qiid, {qiid: qiid, err: err});
+            throw new Error("No qInstance with qiid " + qiid);
+            //return sendError(res, 404, "No qInstance with qiid " + qiid, {qiid: qiid, err: err});
         return callback(obj);
     });
 };
@@ -842,11 +809,13 @@ var readQInstance = function(res, qiid, callback) {
 var loadQuestionServer = function(qid, callback) {
     questionFilePath(qid, "server.js", function(err, filePath) {
         if (err)
-            return sendError(res, 404, "Unable to find 'server.js' for qid: " + qid, err);
+            throw err;
+            //return sendError(res, 404, "Unable to find 'server.js' for qid: " + qid, err);
         var serverFilePath = path.join(config.questionsDir, filePath);
         requirejs([serverFilePath], function(server) {
             if (server === undefined)
-                return sendError("Unable to load 'server.js' for qid: " + qid);
+                throw new Error("Unable to load 'server.js' for qid: " + qid);
+                //return sendError("Unable to load 'server.js' for qid: " + qid);
             return callback(server);
         });
     });
@@ -855,9 +824,11 @@ var loadQuestionServer = function(qid, callback) {
 var readTest = function(res, tid, callback) {
     tCollect.findOne({tid: tid}, function(err, obj) {
         if (err)
-            return sendError(res, 500, "Error accessing tests database", {tid: tid, err: err});
+            throw err;
+            //return sendError(res, 500, "Error accessing tests database", {tid: tid, err: err});
         if (!obj)
-            return sendError(res, 404, "No test with tid " + tid, {tid: tid, err: err});
+            throw new Error("No test with tid " + tid);
+            //return sendError(res, 404, "No test with tid " + tid, {tid: tid, err: err});
         return callback(obj);
     });
 };
@@ -873,13 +844,15 @@ var loadTestServer = function(tid, callback) {
 
 var writeTInstance = function(req, res, obj, callback) {
     if (obj.tiid === undefined)
-        return sendError(res, 500, "No tiid for write to tInstance database", {tInstance: obj});
+        throw new Error("No tiid for write to tInstance database");
+        //return sendError(res, 500, "No tiid for write to tInstance database", {tInstance: obj});
     if (obj._id !== undefined)
         delete obj._id;
     ensureObjAuth(req, res, obj, function(obj) {
         tiCollect.update({tiid: obj.tiid}, {$set: obj}, {upsert: true, w: 1}, function(err) {
             if (err)
-                return sendError(res, 500, "Error writing tInstance to database", {tInstance: obj, err: err});
+                throw err;
+                //return sendError(res, 500, "Error writing tInstance to database", {tInstance: obj, err: err});
             return callback();
         });
     });
@@ -887,12 +860,14 @@ var writeTInstance = function(req, res, obj, callback) {
 
 var writeTest = function(req, res, obj, callback) {
     if (obj.tid === undefined)
-        return sendError(res, 500, "No tid for write to test database", {test: obj});
+        throw new Error("No tid for write to test database");
+        //return sendError(res, 500, "No tid for write to test database", {test: obj});
     if (obj._id !== undefined)
         delete obj._id;
     tCollect.update({tid: obj.tid}, {$set: obj}, {upsert: true, w: 1}, function(err) {
         if (err)
-            return sendError(res, 500, "Error writing test to database", {test: obj, err: err});
+            throw err;
+            //return sendError(res, 500, "Error writing test to database", {test: obj, err: err});
         return callback();
     });
 };
@@ -907,7 +882,8 @@ var testProcessSubmission = function(req, res, tiid, submission, callback) {
                     try {
                         server.updateWithSubmission(tInstance, test, submission, testDB[tid].options);
                     } catch (e) {
-                        return sendError(res, 500, "Error updating test: " + String(e), {err: e, stack: e.stack});
+                        throw e;
+                        //return sendError(res, 500, "Error updating test: " + String(e), {err: e, stack: e.stack});
                     }
                     writeTInstance(req, res, tInstance, function() {
                         writeTest(req, res, test, function() {
@@ -922,10 +898,12 @@ var testProcessSubmission = function(req, res, tiid, submission, callback) {
 
 app.post("/submissions", function(req, res) {
     if (!sCollect) {
-        return sendError(res, 500, "Do not have access to the submissions database collection");
+        throw new Error("Er: 1");
+        //return sendError(res, 500, "Do not have access to the submissions database collection");
     }
     if (!uCollect) {
-        return sendError(res, 500, "Do not have access to the users database collection");
+        throw new Error("Er: 1");
+        //return sendError(res, 500, "Do not have access to the users database collection");
     }
     var submission = {
         date: new Date(),
@@ -934,17 +912,22 @@ app.post("/submissions", function(req, res) {
         submittedAnswer: req.body.submittedAnswer
     };
     if (submission.uid === undefined) {
-        return sendError(res, 400, "No user ID provided");
+        throw new Error("Er: 1");
+        //return sendError(res, 400, "No user ID provided");
     }
     if (submission.qiid === undefined) {
-        return sendError(res, 400, "No qInstance ID provided");
+        throw new Error("Er: 1");
+        //return sendError(res, 400, "No qInstance ID provided");
     }
     if (submission.submittedAnswer === undefined && req.body.overrideScore === undefined) {
-        return sendError(res, 400, "No submittedAnswer provided");
+        throw new Error("Er: 1");
+        //return sendError(res, 400, "No submittedAnswer provided");
     }
     if (req.body.overrideScore !== undefined) {
-        if (!isSuperuser(req))
-            return sendError(res, 403, "Superuser permissions required for override");
+        //if (!isSuperuser(req))
+        if (!req.app.enabled("superuser"))
+            throw new Error("Er: 1");
+            //return sendError(res, 403, "Superuser permissions required for override");
         submission.overrideScore = req.body.overrideScore;
     }
     if (req.body.practice !== undefined) {
@@ -958,7 +941,8 @@ app.post("/submissions", function(req, res) {
                 var tiid = qInstance.tiid;
                 var info = questionDB[submission.qid];
                 if (info === undefined) {
-                    return sendError(res, 404, "No such QID: " + submission.qid);
+                    throw new Error("Er: 1");
+                    //return sendError(res, 404, "No such QID: " + submission.qid);
                 }
                 var options = info.options || {};
                 options = _.defaults(options, qInstance.options || {});
@@ -970,7 +954,8 @@ app.post("/submissions", function(req, res) {
                         try {
                             grading = server.gradeAnswer(qInstance.vid, qInstance.params, qInstance.trueAnswer, submission.submittedAnswer, options);
                         } catch (e) {
-                            return sendError(res, 500, "Error in " + submission.qid + " gradeAnswer(): " + e.toString(), {stack: e.stack});
+                            throw e;
+                            //return sendError(res, 500, "Error in " + submission.qid + " gradeAnswer(): " + e.toString(), {stack: e.stack});
                         }
                         submission.score = _.isNumber(grading.score) ? grading.score : 0; // make sure score is a Number
                         submission.score = Math.max(0, Math.min(1, submission.score)); // clip to [0, 1]
@@ -982,7 +967,8 @@ app.post("/submissions", function(req, res) {
                         testProcessSubmission(req, res, tiid, submission, function(submission) {
                             sCollect.insert(submission, {w: 1}, function(err) {
                                 if (err) {
-                                    return sendError(res, 500, "Error writing submission to database", err);
+                                    throw err;
+                                    //return sendError(res, 500, "Error writing submission to database", err);
                                 }
                                 res.json(stripPrivateFields(submission));
                             });
@@ -996,15 +982,18 @@ app.post("/submissions", function(req, res) {
 
 app.get("/tests", function(req, res) {
     if (!tCollect) {
-        return sendError(res, 500, "Do not have access to the tCollect database collection");
+        throw new Error("Er: 1");
+        //return sendError(res, 500, "Do not have access to the tCollect database collection");
     }
     tCollect.find({}, function(err, cursor) {
         if (err) {
-            return sendError(res, 500, "Error accessing tCollect database", err);
+            throw err;
+            //return sendError(res, 500, "Error accessing tCollect database", err);
         }
         cursor.toArray(function(err, objs) {
             if (err) {
-                return sendError(res, 500, "Error serializing tests", err);
+                throw err;
+                //return sendError(res, 500, "Error serializing tests", err);
             }
             objs = _(objs).filter(function(o) {return _(testDB).has(o.tid);});
             res.json(stripPrivateFields(objs));
@@ -1014,14 +1003,17 @@ app.get("/tests", function(req, res) {
 
 app.get("/tests/:tid", function(req, res) {
     if (!tCollect) {
-        return sendError(res, 500, "Do not have access to the tCollect database collection");
+        throw new Error("Er: 1");
+        //return sendError(res, 500, "Do not have access to the tCollect database collection");
     }
     tCollect.findOne({tid: req.params.tid}, function(err, obj) {
         if (err) {
-            return sendError(res, 500, "Error accessing tCollect database for tid " + req.params.tid, err);
+            throw err;
+            //return sendError(res, 500, "Error accessing tCollect database for tid " + req.params.tid, err);
         }
         if (!obj) {
-            return sendError(res, 404, "No test with tid " + req.params.tid);
+            throw new Error("Er: 1");
+            //return sendError(res, 404, "No test with tid " + req.params.tid);
         }
         res.json(stripPrivateFields(obj));
     });
@@ -1071,7 +1063,8 @@ var updateTInstances = function(req, res, tInstances, updateCallback) {
         });
     }, function(err) {
         if (err)
-            return sendError(res, 500, "Error updating tInstances", err);
+            throw err;
+            //return sendError(res, 500, "Error updating tInstances", err);
         updateCallback();
     });
 };
@@ -1104,7 +1097,8 @@ var autoCreateTInstances = function(req, res, tInstances, autoCreateCallback) {
         }
     }, function(err) {
         if (err)
-            return sendError(res, 500, "Error autoCreating tInstances", err);
+            throw err;
+            //return sendError(res, 500, "Error autoCreating tInstances", err);
         var tInstances = _.chain(tiDB).values().flatten(true).value();
         autoCreateCallback(tInstances);
     });
@@ -1112,7 +1106,8 @@ var autoCreateTInstances = function(req, res, tInstances, autoCreateCallback) {
 
 app.get("/tInstances", function(req, res) {
     if (!tiCollect) {
-        return sendError(res, 500, "Do not have access to the tiCollect database collection");
+        throw new Error("Er: 1");
+        //return sendError(res, 500, "Do not have access to the tiCollect database collection");
     }
     var query = {};
     if ("uid" in req.query) {
@@ -1120,11 +1115,13 @@ app.get("/tInstances", function(req, res) {
     }
     tiCollect.find(query, function(err, cursor) {
         if (err) {
-            return sendError(res, 500, "Error accessing tiCollect database", err);
+            throw err;
+            //return sendError(res, 500, "Error accessing tiCollect database", err);
         }
         cursor.toArray(function(err, tInstances) {
             if (err) {
-                return sendError(res, 500, "Error serializing tInstances", err);
+                throw err;
+                //return sendError(res, 500, "Error serializing tInstances", err);
             }
             tInstances = _(tInstances).filter(function(ti) {return _(testDB).has(ti.tid);});
             updateTInstances(req, res, tInstances, function() {
@@ -1140,14 +1137,17 @@ app.get("/tInstances", function(req, res) {
 
 app.get("/tInstances/:tiid", function(req, res) {
     if (!tiCollect) {
-        return sendError(res, 500, "Do not have access to the tiCollect database collection");
+        throw new Error("Er: 1");
+        //return sendError(res, 500, "Do not have access to the tiCollect database collection");
     }
     tiCollect.findOne({tiid: req.params.tiid}, function(err, obj) {
         if (err) {
-            return sendError(res, 500, "Error accessing tiCollect database", err);
+            throw err;
+            //return sendError(res, 500, "Error accessing tiCollect database", err);
         }
         if (!obj) {
-            return sendError(res, 404, "No tInstance with tiid " + req.params.tiid);
+            throw new Error("Er: 1");
+            //return sendError(res, 404, "No tInstance with tiid " + req.params.tiid);
         }
         ensureObjAuth(req, res, obj, function(obj) {
             res.json(stripPrivateFields(obj));
@@ -1159,26 +1159,32 @@ app.post("/tInstances", function(req, res) {
     var uid = req.body.uid;
     var tid = req.body.tid;
     if (uid === undefined) {
-        return sendError(res, 400, "No uid provided");
+        throw new Error("Er: 1");
+        //return sendError(res, 400, "No uid provided");
     }
     if (tid === undefined) {
-        return sendError(res, 400, "No tid provided");
+        throw new Error("Er: 1");
+        //return sendError(res, 400, "No tid provided");
     }
     var testInfo = testDB[tid];
     if (testInfo === undefined) {
-        return sendError(res, 400, "Invalid tid", {tid: tid});
+        throw new Error("Er: 1");
+        //return sendError(res, 400, "Invalid tid", {tid: tid});
     }
     if (testInfo.options.autoCreate) {
-        return sendError(res, 400, "Test can only be autoCreated", {tid: tid});
+        throw new Error("Er: 1");
+        //return sendError(res, 400, "Test can only be autoCreated", {tid: tid});
     }
     tiCollect.find({tid: tid, uid: uid}, {"number": 1}, function(err, cursor) {
         if (err) {
-            return sendError(res, 400, "Error searching for pre-existing tInstances", {err: err});
+            throw err;
+            //return sendError(res, 400, "Error searching for pre-existing tInstances", { err: err });
         }
         var number = 1;
         cursor.each(function(err, item) {
             if (err) {
-                return sendError(res, 400, "Error iterating over tiids", {err: err});
+                throw err;
+                //return sendError(res, 400, "Error iterating over tiids", { err: err });
             }
             if (item != null) {
                 if (item.number !== undefined && item.number >= number)
@@ -1211,7 +1217,8 @@ app.post("/tInstances", function(req, res) {
                                     });
                                 }, function(err, listOfQidPairQiid) {
                                     if (err)
-                                        return sendError(res, 400, "Error creating qInstances", {tiid: tInstance.tiid, err: err});
+                                        throw err;
+                                        //return sendError(res, 400, "Error creating qInstances", {tiid: tInstance.tiid, err: err});
                                     tInstance.qiidsByQid = _.object(listOfQidPairQiid);
                                     writeTInstance(req, res, tInstance, function() {
                                         res.json(stripPrivateFields(tInstance));
@@ -1239,7 +1246,8 @@ var finishTest = function(req, res, tiid, callback) {
                     try {
                         server.finish(tInstance, test);
                     } catch (e) {
-                        return sendError(res, 500, "Error finishing test: " + String(e), {err: e, stack: e.stack});
+                        throw e;
+                        //return sendError(res, 500, "Error finishing test: " + String(e), {err: e, stack: e.stack});
                     }
                     writeTInstance(req, res, tInstance, function() {
                         writeTest(req, res, test, function() {
@@ -1255,12 +1263,15 @@ var finishTest = function(req, res, tiid, callback) {
 app.patch("/tInstances/:tiid", function(req, res) {
     var tiid = req.params.tiid;
     if (tiid === undefined) {
-        return sendError(res, 400, "No tiid provided");
+        throw new Error("Er: 1");
+        //return sendError(res, 400, "No tiid provided");
     }
     if (req.body.open === undefined)
-        return sendError(res, 400, "Patch can only be to 'open' member");
+        throw new Error("Er: 1");
+        //return sendError(res, 400, "Patch can only be to 'open' member");
     if (req.body.open !== false)
-        return sendError(res, 400, 'Patch can only be to set "open": false');
+        throw new Error("Er: 1");
+        //return sendError(res, 400, 'Patch can only be to set "open": false');
 
     finishTest(req, res, tiid, function(tInstance) {
         res.json(stripPrivateFields(tInstance));
@@ -1269,19 +1280,22 @@ app.patch("/tInstances/:tiid", function(req, res) {
 
 app.get("/export.csv", function(req, res) {
     if (!tiCollect) {
-        return sendError(res, 500, "Do not have access to the tiCollect database collection");
+        throw new Error("Er: 1");
+        //return sendError(res, 500, "Do not have access to the tiCollect database collection");
     }
     tiCollect.find({}, function(err, cursor) {
         if (err) {
-            return sendError(res, 500, "Error accessing tiCollect database", err);
+            throw err;
+            //return sendError(res, 500, "Error accessing tiCollect database", err);
         }
         scores = {};
         cursor.each(function(err, item) {
             if (err) {
-                return sendError(res, 400, "Error iterating over tInstances", {err: err});
+                throw err;
+                //return sendError(res, 400, "Error iterating over tInstances", {err: err});
             }
             if (item != null) {
-                if (!checkObjAuth(req, item))
+                if (!req.app.enabled("superuser"))
                     return;
                 var tid = item.tid;
                 var uid = item.uid;
@@ -1328,15 +1342,18 @@ app.get("/export.csv", function(req, res) {
 
 app.get("/stats", function(req, res) {
     if (!statsCollect) {
-        return sendError(res, 500, "Do not have access to the 'statistics' database collection");
+        throw new Error("Er: 1");
+        //return sendError(res, 500, "Do not have access to the 'statistics' database collection");
     }
     statsCollect.find({}, {name: 1}, function(err, cursor) {
         if (err) {
-            return sendError(res, 500, "Error accessing 'statistics' collections", err);
+            throw err;
+            //return sendError(res, 500, "Error accessing 'statistics' collections", err);
         }
         cursor.toArray(function(err, objs) {
             if (err) {
-                return sendError(res, 500, "Error serializing statistics", err);
+                throw err;
+                //return sendError(res, 500, "Error serializing statistics", err);
             }
             res.json(stripPrivateFields(objs));
         });
@@ -1345,14 +1362,17 @@ app.get("/stats", function(req, res) {
 
 app.get("/stats/submissionsPerHour", function(req, res) {
     if (!statsCollect) {
-        return sendError(res, 500, "Do not have access to the 'statistics' database collection");
+        throw new Error("Er: 1");
+        //return sendError(res, 500, "Do not have access to the 'statistics' database collection");
     }
     statsCollect.findOne({name: "submissionsPerHour"}, function(err, obj) {
         if (err) {
-            return sendError(res, 500, "Error accessing 'statistics' collections for submissionsPerHour", err);
+            throw err;
+            //return sendError(res, 500, "Error accessing 'statistics' collections for submissionsPerHour", err);
         }
         if (!obj) {
-            return sendError(res, 404, "No stats for submissionsPerHour");
+            throw new Error("Er: 1");
+            //return sendError(res, 404, "No stats for submissionsPerHour");
         }
         res.json(stripPrivateFields(obj));
     });
@@ -1360,14 +1380,17 @@ app.get("/stats/submissionsPerHour", function(req, res) {
 
 app.get("/stats/usersPerHour", function(req, res) {
     if (!statsCollect) {
-        return sendError(res, 500, "Do not have access to the 'statistics' database collection");
+        throw new Error("Er: 1");
+        //return sendError(res, 500, "Do not have access to the 'statistics' database collection");
     }
     statsCollect.findOne({name: "usersPerHour"}, function(err, obj) {
         if (err) {
-            return sendError(res, 500, "Error accessing 'statistics' collections for usersPerHour", err);
+            throw err;
+            //return sendError(res, 500, "Error accessing 'statistics' collections for usersPerHour", err);
         }
         if (!obj) {
-            return sendError(res, 404, "No stats for usersPerHour");
+            throw new Error("Er: 1");
+            //return sendError(res, 404, "No stats for usersPerHour");
         }
         res.json(stripPrivateFields(obj));
     });
@@ -1398,6 +1421,27 @@ if (config.deployMode !== 'engr') {
         res.sendfile(path.join("text", req.params.filename), {root: config.frontendDir});
     });
 }
+
+var skipUIDs = {};
+
+//if (config.deployMode === 'engr') {
+skipUIDs["user1@illinois.edu"] = true;
+skipUIDs["mwest@illinois.edu"] = true;
+skipUIDs["zilles@illinois.edu"] = true;
+skipUIDs["dullerud@illinois.edu"] = true;
+skipUIDs["tomkin@illinois.edu"] = true;
+skipUIDs["ertekin@illinois.edu"] = true;
+skipUIDs["jkrehbi2@illinois.edu"] = true;
+skipUIDs["aandrsn3@illinois.edu"] = true;
+skipUIDs["farooq1@illinois.edu"] = true;
+skipUIDs["jsandrs2@illinois.edu"] = true;
+skipUIDs["knguyen9@illinois.edu"] = true;
+skipUIDs["linguo2@illinois.edu"] = true;
+skipUIDs["saggrwl3@illinois.edu"] = true;
+skipUIDs["hwang158@illinois.edu"] = true;
+skipUIDs["mfsilva@illinois.edu"] = true;
+skipUIDs["gladish2@illinois.edu"] = true;
+skipUIDs["ffxiao2@illinois.edu"] = true;
 
 var submissionsPerHour = function() {
     if (!sCollect) {
@@ -1661,9 +1705,11 @@ var startServer = function(callback) {
         };
         https.createServer(options, app).listen(443);
         logger.info('server listening to HTTPS on port 443');
+        console.log("PrairieLearn on :443");
     } else {
         app.listen(3000);
         logger.info('server listening to HTTP');
+        console.log("PrairieLearn on :3000");
     }
     callback(null);
 };
