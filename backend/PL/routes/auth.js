@@ -11,14 +11,15 @@ var superusers = {
 };
 
 
-
-
 exports.authenticate = function (req, res, next) {
+    // Popular the user as 'nouser' to ensure req.authUID always has a value.
+    req.authUID = 'nouser';
+
     /*
     // hack due to RequireJS not providing header support
     if (/^\/questions/.test(req.path) || /^\/tests/.test(req.path)) {
-        req.app.set('authUID', 'nouser');
-        next();
+        req.authUID = 'nouser';
+        next;
         return;
     }
     */
@@ -32,7 +33,7 @@ exports.authenticate = function (req, res, next) {
     // by-pass authentication for development
     var deployMode = req.app.get('deployMode');
     if (deployMode !== 'engr') {
-        req.app.set('authUID', 'user1@illinois.edu');
+        req.authUID = 'user1@illinois.edu';
         next();
         return;
     }
@@ -61,19 +62,14 @@ exports.authenticate = function (req, res, next) {
         throw new Error("Invalid X-Auth-Signature for " + authUID);
     }
 
-    req.app.set('authUID', authUID);
+    req.authUID = authUID;
     next();
 };
 
 
 exports.setPermissions = function (req, res, next) {
-    if (req.app.enabled('authUID')) {
-        var uid = req.app.get('authUID');
-        req.app.set('superuser', (superusers[uid] === true));
-    } else {
-        req.app.set('superuser', false);
-    }
+    req.superuser = (superusers[req.authUID] === true);
 
-    console.log("uid: " + uid);
+    console.log("uid: " + req.authUID);
     next();
 };

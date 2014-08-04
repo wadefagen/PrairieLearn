@@ -4,17 +4,19 @@ var _ = require("underscore");
 var fs = require("fs");
 var path = require("path");
 var async = require("async");
+var express = require("express");
+var app = express();
 
+/**
+ * Set up application-level config...
+ */
 var config = {};
-
 config.timezone = 'America/Chicago';
 
 config.deployMode = 'local';
-if (process.argv.length > 2) {
-    if (process.argv[2] === "deploy") {
-        config.deployMode = 'engr';
-    }
-}
+if (process.argv.length > 2 && process.argv[2] === 'deploy') 
+    config.deployMode = 'engr';
+
 config.questionsDir = "questions";
 config.testsDir = "tests";
 config.frontendDir = "../frontend";
@@ -44,6 +46,9 @@ if (config.deployMode === 'engr') {
     console.log("nodetime started");
 }
 
+app.locals.conifg = config;
+
+
 
 var requirejs = require("requirejs");
 
@@ -62,7 +67,7 @@ if (config.deployMode === 'engr') {
 var winston = require('winston');
 var logger = new (winston.Logger)({
     transports: [
-        new (winston.transports.Console)({level: 'info', timestamp: true, colorize: true}),
+        new (winston.transports.Console)({level: 'warn', timestamp: true, colorize: true}),
         new (winston.transports.File)({filename: logFilename, level: 'info'})
     ]
 });
@@ -82,9 +87,7 @@ var gamma = require("gamma");
 var numeric = require("numeric");
 var PrairieStats = requirejs("PrairieStats");
 var PrairieModel = requirejs("PrairieModel");
-var express = require("express");
 var https = require('https');
-var app = express();
 
 var SAMPLE_INTERVAL = 60 * 1000; // ms
 var nSample = 0;
@@ -264,49 +267,6 @@ var loadDB = function(callback) {
 var questionDB = {};
 var testDB = {};
 
-var loadInfoDB = function(db, idName, parentDir, loadCallback) {
-    fs.readdir(parentDir, function(err, files) {
-        if (err) {
-            logger.error("unable to read info directory: " + parentDir, err);
-            loadCallback(true);
-            return;
-        }
-        async.each(files, function(dir, callback) {
-            var infoFile = path.join(parentDir, dir, "info.json");
-            fs.readFile(infoFile, function(err, data) {
-                if (err) {
-                    logger.error("Unable to read file: " + infoFile, err);
-                    callback(null);
-                    return;
-                }
-                var info;
-                try {
-                    info = JSON.parse(data);
-                } catch (e) {
-                    logger.error("Error reading file: " + infoFile + ": " + e.name + ": " + e.message, e);
-                    callback(null);
-                    return;
-                }
-                if (info.disabled) {
-                    callback(null);
-                    return;
-                }
-                info[idName] = dir;
-                db[dir] = info;
-                return callback(null);
-            });
-        }, function(err) {
-            if (err) {
-                logger.error("Error reading data", err);
-                loadCallback(err);
-                return;
-            }
-            logger.info("successfully loaded info from " + parentDir + ", number of items = " + _.size(db));
-            loadCallback();
-        });
-    });
-};
-
 var initTestData = function(callback) {
     async.each(_(testDB).values(), function(item, cb) {
         tCollect.findOne({tid: item.tid}, function(err, obj) {
@@ -367,8 +327,7 @@ var monitor = function() {
 var checkObjAuth = function(req, obj) {
     var authorized = false;
     //if (isSuperuser(req))
-    console.log("Checking superuser: " + req.app.enabled("superuser"));
-    if (req.app.enabled("superuser"))
+    if (req.superuser)
         authorized = true;
     if (obj.uid === req.authUID) {
         if (obj.availDate === undefined) {
@@ -414,39 +373,26 @@ var stripPrivateFields = function(obj) {
 
 
 
-app.use(function (req, res, next) { logRequest(); next(); });
+app.use(function(req, res, next) { logRequest(); next(); });
 
-var pl_auth = require("./PL/auth");
-app.use(pl_auth.authenticate);
-app.use(pl_auth.setPermissions);
+/* Pre-process routes */
+var pl_auth_routes = require("./PL/routes/auth");
+app.use(pl_auth_routes.authenticate);
+app.use(pl_auth_routes.setPermissions);
 
-var pl_error = require("./PL/error");
-app.use(pl_error.log);
-app.use(pl_error.handle);
+var pl_user_routes = require("./PL/routes/user");
+app.use(pl_user_routes.ensure_uid_in_db);
 
+/* "/users" -based routes */
+app.param("uid", pl_user_routes.param_uid);
+app.get("/users", pl_user_routes.allUsers);
+app.get("/users/:uid", pl_user_routes.user_uid);
 
+/* Error routes */
+var pl_error_routes = require("./PL/routes/error");
+app.use(pl_error_routes.log);
+app.use(pl_error_routes.handle);
 
-app.use(function (req, res, next) {
-
-    // add authUID to DB if not already present
-    uCollect.findOne({uid: req.authUID}, function(err, uObj) {
-        if (err) {
-            throw err;
-            //return sendError(res, 500, "error checking for user: " + req.authUID, err);
-        }
-        if (!uObj) {
-            uCollect.insert({uid: req.authUID}, {w: 1}, function(err) {
-                if (err) {
-                    throw err;
-                    //return sendError(res, 500, "error adding user: " + req.authUID, err);
-                }
-                next();
-            });
-        } else {
-            next();
-        }
-    });
-});
 
 app.use(function(req, res, next) {
     if (req.method !== 'OPTIONS') {
@@ -507,6 +453,12 @@ app.get("/questions/:qid", function(req, res) {
     res.json(stripPrivateFields({qid: info.qid, title: info.title, number: info.number}));
 });
 
+/*
+app.param("qid", function (req, res, next, id) {
+
+});
+*/
+
 var questionFilePath = function(qid, filename, callback, nTemplates) {
     nTemplates = (nTemplates === undefined) ? 0 : nTemplates;
     if (nTemplates > 10) {
@@ -546,72 +498,6 @@ var sendQuestionFile = function(req, res, filename) {
 
 app.get("/questions/:qid/:filename", function(req, res) {
     sendQuestionFile(req, res, req.params.filename);
-});
-
-app.get("/users", function(req, res) {
-    if (!uCollect) {
-        throw new Error("Do not have access to the users database collection");
-        //return sendError(res, 500, "Do not have access to the users database collection");
-    }
-    uCollect.find({}, {"uid": 1, "name": 1}, function(err, cursor) {
-        if (err) {
-            throw err;
-            //return sendError(res, 500, "Error accessing users database", err);
-        }
-        cursor.toArray(function(err, objs) {
-            if (err) {
-                throw err;
-                //return sendError(res, 500, "Error serializing users", err);
-            }
-            async.map(objs, function(u, callback) {
-                var perms = [];
-                //if (superusers[u.uid] === true)
-                if (req.app.enabled("superuser"))
-                    perms.push("superuser");
-                callback(null, {
-                    name: u.name,
-                    uid: u.uid,
-                    perms: perms
-                });
-            }, function(err, objs) {
-                if (err) {
-                    throw err;
-                    //return sendError(res, 500, "Error cleaning users", err);
-                }
-                filterObjsByAuth(req, objs, function(objs) {
-                    res.json(stripPrivateFields(objs));
-                });
-            });
-        });
-    });
-});
-
-app.get("/users/:uid", function(req, res) {
-    if (!uCollect) {
-        throw new Error("Do not have access to the users database collection");
-        //return sendError(res, 500, "Do not have access to the users database collection");
-    }
-    uCollect.findOne({uid: req.params.uid}, function(err, uObj) {
-        if (err) {
-            throw err;
-            //return sendError(res, 500, "Error accessing users database for uid " + req.params.uid, err);
-        }
-        if (!uObj) {
-            throw new Error("No user with uid " + req.params.uid);
-            //return sendError(res, 404, "No user with uid " + req.params.uid);
-        }
-        var perms = [];
-        if (req.app.enabled("superuser"))
-            perms.push("superuser");
-        var obj = {
-            name: uObj.name,
-            uid: uObj.uid,
-            perms: perms
-        };
-        ensureObjAuth(req, res, obj, function(obj) {
-            res.json(stripPrivateFields(obj));
-        });
-    });
 });
 
 app.get("/qInstances", function(req, res) {
@@ -925,7 +811,7 @@ app.post("/submissions", function(req, res) {
     }
     if (req.body.overrideScore !== undefined) {
         //if (!isSuperuser(req))
-        if (!req.app.enabled("superuser"))
+        if (!req.superuser)
             throw new Error("Er: 1");
             //return sendError(res, 403, "Superuser permissions required for override");
         submission.overrideScore = req.body.overrideScore;
@@ -1295,7 +1181,7 @@ app.get("/export.csv", function(req, res) {
                 //return sendError(res, 400, "Error iterating over tInstances", {err: err});
             }
             if (item != null) {
-                if (!req.app.enabled("superuser"))
+                if (!req.superuser)
                     return;
                 var tid = item.tid;
                 var uid = item.uid;
@@ -1720,13 +1606,22 @@ var startIntervalJobs = function(callback) {
     callback(null);
 };
 
+var FileBase = require('./PL/classes/FileBase');
+
+
+
 async.series([
-    function(callback) {
-        loadInfoDB(questionDB, "qid", config.questionsDir, callback);
-    },
-    function(callback) {
-        loadInfoDB(testDB, "tid", config.testsDir, callback);
-    },
+    function (callback) {
+        var questionFileBase = new FileBase(config.questionsDir);
+        questionDB = questionFileBase.load("qid");
+        console.log(questionDB);
+
+        var questionFileBase = new FileBase(config.testsDir);
+        testDB = questionFileBase.load("tid");
+
+        callback();
+    }
+    ,
     loadDB,
     initTestData,
     //runBayes,
