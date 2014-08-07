@@ -1,4 +1,5 @@
 var _ = require("underscore");
+
 var DB = require("../classes/DB");
 var Permissions = require("../classes/Permissions.js");
 
@@ -9,9 +10,9 @@ exports.ensure_uid_in_db = function (req, res, next) {
         { uid: req.authUID },
         function (err, doc) {
             if (err) { next(err); }
-            if (doc) { next(); }
-
-            if (!doc) {
+            if (doc) {
+                next();
+            } else {  /* (!doc) */
                 users.insert(
                     { uid: req.uid },
                     { w: 1 },
@@ -58,5 +59,5 @@ exports.user_uid = function (req, res, next) {
         uid: req.uid_doc.uid
     };
 
-    res.json(Permissions.filterAndStrip(result));;
+    res.json(Permissions.filterAndStrip(req, result));
 };

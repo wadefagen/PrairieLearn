@@ -46,7 +46,7 @@ if (config.deployMode === 'engr') {
     console.log("nodetime started");
 }
 
-app.locals.conifg = config;
+app.locals.config = config;
 
 
 
@@ -388,6 +388,16 @@ app.param("uid", pl_user_routes.param_uid);
 app.get("/users", pl_user_routes.allUsers);
 app.get("/users/:uid", pl_user_routes.user_uid);
 
+/* "/questions" -based routes */
+var pl_question_routes = require("./PL/routes/question");
+pl_question_routes.init(app);
+app.param("qid", pl_question_routes.param_qid);
+app.param("qfile", pl_question_routes.param_qfile);
+
+app.get("/questions", pl_question_routes.allQuestions);
+app.get("/questions/:qid", pl_question_routes.qid);
+app.get("/questions/:qid/:qfile", pl_question_routes.qid_qfile);
+
 /* Error routes */
 var pl_error_routes = require("./PL/routes/error");
 app.use(pl_error_routes.log);
@@ -437,28 +447,9 @@ if (config.deployMode !== 'engr') {
     });
 }
 
-app.get("/questions", function(req, res) {
-    async.map(_.values(questionDB), function(item, callback) {
-        callback(null, {qid: item.qid, title: item.title, number: item.number});
-    }, function(err, results) {
-        res.json(stripPrivateFields(results));
-    });
-});
-
-app.get("/questions/:qid", function(req, res) {
-    var info = questionDB[req.params.qid];
-    if (info === undefined)
-        throw new Error("No such question: " + req.params.qid);
-        //return sendError(res, 404, "No such question: " + req.params.qid);
-    res.json(stripPrivateFields({qid: info.qid, title: info.title, number: info.number}));
-});
-
 /*
-app.param("qid", function (req, res, next, id) {
 
-});
 */
-
 var questionFilePath = function(qid, filename, callback, nTemplates) {
     nTemplates = (nTemplates === undefined) ? 0 : nTemplates;
     if (nTemplates > 10) {
@@ -486,6 +477,34 @@ var questionFilePath = function(qid, filename, callback, nTemplates) {
         }
     });
 };
+/* 
+app.get("/questions", function(req, res) {
+    async.map(_.values(questionDB), function(item, callback) {
+        callback(null, {qid: item.qid, title: item.title, number: item.number});
+    }, function (err, results) {
+        console.log(" ! ! ! ! ! ! ! ! ! ! ! ");
+        console.log(results);
+        console.log(" ! ! ! ! ! ! ! ! ! ! ! ");
+
+        res.json(stripPrivateFields(results));
+    });
+});
+
+app.get("/questions/:qid", function(req, res) {
+    var info = questionDB[req.params.qid];
+    if (info === undefined)
+        throw new Error("No such question: " + req.params.qid);
+    //return sendError(res, 404, "No such question: " + req.params.qid);
+
+    console.log(" - - - - - - - - - - - ");
+    console.log(info);
+    console.log(info.qid);
+    console.log(info.title);
+    console.log(info.number);
+    console.log(" - - - - - - - - - - - ");
+
+    res.json(stripPrivateFields({qid: info.qid, title: info.title, number: info.number}));
+});
 
 var sendQuestionFile = function(req, res, filename) {
     questionFilePath(req.params.qid, filename, function(err, filePath) {
@@ -499,6 +518,8 @@ var sendQuestionFile = function(req, res, filename) {
 app.get("/questions/:qid/:filename", function(req, res) {
     sendQuestionFile(req, res, req.params.filename);
 });
+*/
+
 
 app.get("/qInstances", function(req, res) {
     if (!qiCollect) {

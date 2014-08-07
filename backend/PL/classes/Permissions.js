@@ -22,7 +22,7 @@ exports.filter = filter = function (req, arr) {
 
 exports.stripPrivate = stripPrivate = function (obj) {
     if (_.isArray(obj))
-        return _(obj).map(function (item) { return stripPrivateFields(item); });
+        return _(obj).map(function (item) { return stripPrivate(item); });
     if (!_.isObject(obj))
         return obj;
     var newObj = obj;
@@ -31,11 +31,12 @@ exports.stripPrivate = stripPrivate = function (obj) {
         var newObj = _(newObj).omit(obj._private);
     }
     _(newObj).each(function (value, key) {
-        newObj[key] = stripPrivateFields(value);
+        newObj[key] = stripPrivate(value);
     });
     return newObj;
 };
 
 exports.filterAndStrip = function (req, arr) {
+    console.log("fAs: " + arr);
     return stripPrivate(filter(req, arr));
 }

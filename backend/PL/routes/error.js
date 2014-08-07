@@ -6,8 +6,7 @@
 /* Logs the error message. */
 exports.log = function (err, req, res, next) {
     //logger.error("Error: " + err);
-    console.log("Error: " + err);
-    console.log("Error: " + err.message);
+    console.log(err.stack);
     next(err);
 };
 
